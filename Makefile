@@ -1,28 +1,67 @@
-.PHONY: init up gen snapshot proof verify psql down reset
+# Git Bash on Windows rewrites paths like /connectors/x.json before Docker sees them; this stops that.
+export MSYS_NO_PATHCONV=1
+
+TOPIC ?= ops.public.vendor_items
+
+.PHONY: init up gen seed snapshot proof connector status stream stream-fast verify check psql peek gate gate-logs evaluate airflow down reset
 
 init:       ## create your .env from the template (first time only)
 	@test -f .env || cp .env.example .env
 
-up:         ## start postgres (WAL on)
-	docker compose up -d postgres
+up:         ## start postgres, kafka, debezium connect, kafka-ui
+	docker compose up -d
 
 gen:        ## generate the CSV data into ./data/qcommerce_data
 	docker compose run --rm generator
 
-snapshot:   ## load the initial rows (try a sample first: make snapshot ARGS="--limit 200")
-	docker compose run --rm replayer snapshot $(ARGS)
+seed:       ## 1a) load ALL the CSV tables (vendors, orders, customers...) into postgres
+	docker compose run --rm --build replayer seed
 
-proof:      ## print the evidence that step 1 worked (WAL, replica identity, publication, rows, sample)
-	docker compose exec postgres psql -U postgres -d ops -f /proof.sql
+snapshot:   ## 1b) load the op=r rows of vendor_items into postgres (before the connector exists)
+	docker compose run --rm --build replayer snapshot
 
-verify:     ## compare postgres with the file (only after a FULL snapshot)
-	docker compose run --rm replayer verify --stage snapshot
+connector:  ## 2) register Debezium (it snapshots the table, then follows the WAL)
+	docker compose exec connect curl -s -X POST -H "Content-Type: application/json" --data @/connectors/connector.json http://localhost:8083/connectors
 
-psql:       ## open a SQL shell on the database
-	docker compose exec postgres psql -U postgres -d ops
+status:     ## connector health (look for "RUNNING")
+	docker compose exec connect curl -s http://localhost:8083/connectors/qcommerce-cdc/status
 
-down:       ## stop, keep data
-	docker compose down
+stream:     ## 3) replay inserts/updates/deletes (try: make stream ARGS="--limit 500 --rate 20")
+	docker compose run --rm --build replayer stream $(ARGS)
 
-reset:      ## stop and DELETE the data (needed if you change init.sql)
-	docker compose down -v
+proof:      ## evidence that postgres is ready (WAL, publication, rows per table, samples)
+	docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /proof.sql'
+
+stream-fast: ## same as stream, as fast as possible (resume: make stream-fast ARGS="--skip 85000")
+	docker compose run --rm --build replayer stream --rate 0 --batch 200 $(ARGS)
+
+verify:     ## tables vs files, then which stage vendor_items is at (snapshot or final)
+	docker compose run --rm --build replayer verify --stage seed
+	docker compose run --rm --build replayer verify --stage auto
+
+check:      ## run quick sanity SQL on postgres (counts, dirty values, CDC slot)
+	docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /checks.sql'
+
+psql:       ## open a SQL shell on the source database
+	docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
+peek:       ## show 5 messages of a topic (try: make peek TOPIC=vendor_items.dlq)
+	docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic $(TOPIC) --from-beginning --max-messages 5
+
+gate:       ## start the QA gate (needs make gen first)
+	docker compose --profile gate up -d --build qa-gate
+
+gate-logs:  ## follow the QA gate counters
+	docker compose logs -f --tail 20 qa-gate
+
+evaluate:   ## test the gate rules against the answer key (no Kafka needed)
+	docker compose run --rm --build --entrypoint python qa-gate evaluate.py
+
+airflow:    ## start Airflow (UI http://localhost:8080, admin password is in the logs)
+	docker compose --profile airflow up -d airflow
+
+down:       ## stop everything, keep the data
+	docker compose --profile gate --profile airflow down
+
+reset:      ## stop everything and DELETE all data volumes
+	docker compose --profile gate --profile airflow down -v

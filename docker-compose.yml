@@ -85,7 +85,7 @@ services:
     profiles: ["tools"]
     working_dir: /app
     volumes:
-      - ./data_generator:/app:ro      # if your script lives in scripts/data_generator, change this path
+      - ./scripts/data_generator:/app:ro
       - ./data:/data
     command: ["python", "generate_qcommerce_data.py", "--out", "/data", "--preset", "small"]
 

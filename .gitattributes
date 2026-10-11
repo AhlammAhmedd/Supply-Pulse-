@@ -1,0 +1,4 @@
+# Same line endings for everyone. Windows CRLF breaks scripts and Makefiles inside Linux containers.
+* text=auto eol=lf
+*.png binary
+*.zip binary

@@ -1,0 +1,16 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - name: compose file is valid
+        run: docker compose --profile tools --profile gate --profile airflow config -q
+      - name: images build
+        run: docker compose --profile tools --profile gate build
+      - name: generate data
+        run: docker compose run --rm generator
+      - name: QA gate agrees with the answer key
+        run: docker compose run --rm --entrypoint python qa-gate evaluate.py

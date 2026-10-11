@@ -1,7 +1,29 @@
-.git
-data
-**/__pycache__
+# secrets and local config (each person has their own .env)
 .env
-**logs
+*.p8
+*.pem
+*.key
+
+# generated data (keep the empty folder)
+data/*
+!data/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# logs and build output
+**/logs/
 /.dist
-venv
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+
+# os / editor (shared VS Code settings are kept)
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json

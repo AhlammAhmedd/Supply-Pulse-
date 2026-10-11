@@ -62,7 +62,7 @@ def main():
 
     running = True
     signal.signal(signal.SIGTERM, lambda *_: globals().__setitem__("running", False))
-    stats, reasons, pending, last_log = Counter(), Counter(), 0, time.time()
+    stats, reasons, pending, last_log, last_shown = Counter(), Counter(), 0, time.time(), None
 
     def commit():
         nonlocal pending
@@ -94,7 +94,10 @@ def main():
                 if pending >= 500:
                     commit()
             if time.time() - last_log > 10:
-                print(f"routed: {dict(stats)}  dlq reasons: {dict(reasons)}", flush=True)
+                shown = (dict(stats), dict(reasons))
+                if shown != last_shown:                      # only print when something changed
+                    print(f"routed: {dict(stats)}  dlq reasons: {dict(reasons)}", flush=True)
+                    last_shown = shown
                 last_log = time.time()
     finally:
         commit()
