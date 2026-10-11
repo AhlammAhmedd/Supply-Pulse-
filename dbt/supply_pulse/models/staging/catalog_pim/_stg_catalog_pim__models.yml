@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: stg_catalog_pim__products
+
+    data_tests:
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "brand is null or brand not in ('', 'null', 'NULL', 'N/A', 'nan', 'None', '-')"
+
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_valid_barcode"
+          config:
+            severity: warn 
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "product_name is null or product_name <> upper(product_name)"
+            
+    columns:
+      - name: product_id
+        data_tests:
+          - unique       
+          - not_null     
+
+      - name: barcode
+        data_tests:
+          - unique:
+              config:
+                severity: warn   
+
+
+      - name: base_price_egp
+        data_tests:
+          - not_null 
+              
+      - name: is_perishable
+        data_tests:
+          - not_null
+
+      - name: is_active
+        data_tests:
+          - not_null           

@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: stg_customer_app__order_items
+
+    data_tests:
+
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, line_number]
+
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "regexp_like(item_ref, '^(SKU-[0-9]{5}|M[0-9]{7})$')"
+
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "item_name is null or item_name != upper(item_name)"
+
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_unit_price_rebuilt or div0null(line_total, quantity * coalesce(unit_price, vendor_confirmed_price)) < 90"
+
+    columns:
+      - name: order_id
+        description: Order identifier (part of the key).
+        data_tests: [not_null]
+
+      - name: line_number
+        description: Position of the item inside the order (part of the key).
+        data_tests: [not_null]
+
+      - name: quantity
+        data_tests: [not_null]
+
+      - name: is_invalid_quantity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [false]
+              config:
+                severity: warn
+
+      - name: unit_price
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+              config:
+                severity: warn
+
+      - name: is_unit_price_rebuilt
+        data_tests: [not_null]
+
+      - name: vendor_confirmed_price
+        data_tests: [not_null]

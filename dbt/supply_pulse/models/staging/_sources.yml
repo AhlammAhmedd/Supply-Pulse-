@@ -1,0 +1,45 @@
+
+#this file is for defining source instead of defining them in models everytime
+
+version: 2
+
+sources:
+
+
+  - name: catalog_pim             #name of the source in dbt
+    database: SUPPLY_CHAIN_DB     #name of the database in snowflake
+    schema: RAW                   #name of the schema in snowflake
+    tables:
+      - name: products            #name of the table in snowflake
+
+  - name: restaurant_portal
+    database: SUPPLY_CHAIN_DB
+    schema: RAW
+    tables:
+      - name: menu_items
+
+  - name: customer_app
+    database: SUPPLY_CHAIN_DB
+    schema: RAW
+    tables:
+      - name: customers
+      - name: orders
+      - name: order_items
+
+  - name: partners_system
+    database: SUPPLY_CHAIN_DB
+    schema: RAW
+    tables:
+      - name: vendors
+
+  - name: wms
+    database: SUPPLY_CHAIN_DB
+    schema: RAW
+    tables:
+      - name: inventory_movements
+
+  - name: ops_db_cdc
+    database: SUPPLY_CHAIN_DB
+    schema: RAW
+    tables:
+      - name: vendor_items_events

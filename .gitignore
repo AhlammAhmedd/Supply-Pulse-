@@ -5,3 +5,15 @@ data
 **logs
 /.dist
 venv
+
+
+# --- add these lines to the repo's .gitignore if they are not there yet ---
+.venv/
+.env
+data/
+dbt/supply_pulse/target/
+dbt/supply_pulse/dbt_packages/
+dbt/supply_pulse/logs/
+logs/
+
+dbt/supply_pulse/.user.yml

@@ -1,0 +1,33 @@
+# dbt_project.yml - the main settings file. dbt reads it first.
+# It says: project name, which connection profile to use, and where each layer is built.
+
+name: supply_pulse
+version: '1.0.0'
+config-version: 2
+require-dbt-version: [">=1.12.0", "<1.13.0"]   # whole team must use dbt Core 1.12.x
+
+profile: supply_pulse          # must match the top key in profiles.yml
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+clean-targets: ["target", "dbt_packages"]     # created by dbt itself, never committed
+
+# Where each layer is built.
+# dbt's default naming = <target schema>_<+schema below>, so with schema DBT_DONIA in profiles.yml:
+#   staging + intermediate -> DBT_DONIA_SILVER   (views: cheap, always reflect RAW)
+#   marts                  -> DBT_DONIA_GOLD     (tables: fast for the dashboard)
+# Every person gets their own schemas, so nobody overwrites anybody.
+models:
+  supply_pulse:
+    staging:
+      +materialized: view
+      +schema: silver
+    intermediate:
+      +materialized: view
+      +schema: silver
+    marts:
+      +materialized: table
+      +schema: gold
