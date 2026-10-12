@@ -1,0 +1,88 @@
+version: 2
+
+models:
+  - name: dim_item
+    description: "Item dimension. One row per item (catalog products and restaurant menu items)."
+    columns:
+      - name: item_key
+        description: "Surrogate key (hash of item_ref). Used by fact tables."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: item_ref
+        description: "Business key of the item."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: item_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['grocery', 'menu', 'unknown']
+
+
+  - name: fact_order_items
+    description: "Order line facts. One row per (order_id, line_number)."
+
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, line_number]
+      # The join to dim_item must not add or drop rows
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_customer_app__order_items')
+
+    columns:
+      - name: order_key
+        data_tests:
+          - not_null
+
+      - name: item_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_item')
+                field: item_key
+          # Lines pointing to the Unknown member mean an item is missing from dim_item
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "!= '-1'"
+              config:
+                severity: warn
+
+      - name: quantity
+        description: "Valid quantity 1-10; 40 lines stay invalid (no price to rebuild from)."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 10
+              config:
+                severity: warn   # the known 40 invalid lines
+
+      - name: is_stale_price
+        data_tests:
+          - not_null
+
+
+  - name: dim_date
+    columns:
+      - name: date_key
+        data_tests:
+          - unique
+          - not_null
+      - name: full_date
+        data_tests:
+          - unique
+      - name: is_weekend
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [true, false]
+              config:
+                severity: warn
