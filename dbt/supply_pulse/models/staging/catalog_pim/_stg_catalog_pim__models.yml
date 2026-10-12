@@ -63,3 +63,4 @@ models:
       - name: is_active
         data_tests:
           - not_null
+          

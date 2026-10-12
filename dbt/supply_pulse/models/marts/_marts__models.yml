@@ -40,6 +40,11 @@ models:
       - name: order_key
         data_tests:
           - not_null
+          # Every order line must belong to an order in fact_orders (same hash on both sides)
+          - relationships:
+              arguments:
+                to: ref('fact_orders')
+                field: order_key
 
       - name: item_key
         data_tests:
@@ -86,3 +91,78 @@ models:
                 values: [true, false]
               config:
                 severity: warn
+
+
+  - name: dim_customer
+    description: "Grain: one row per customer account, plus one Unknown row with key -1."
+    columns:
+      - name: customer_key
+        data_tests:
+          - unique
+          - not_null
+
+      - name: customer_id
+        data_tests:
+          - unique
+          - not_null
+
+            # signup_date_key must exist in dim_date (-1 = missing signup date)
+      - name: signup_date_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key    
+
+  - name: dim_order_profile
+    description: "Junk dimension. Grain: one row per payment method x status x cancel reason, plus Unknown."
+    columns:
+      - name: order_profile_key
+        data_tests:
+          - unique
+          - not_null
+
+  - name: fact_orders
+    description: "Grain: one row per order."
+    columns:
+      - name: order_key
+        data_tests:
+          - unique
+          - not_null
+
+      - name: customer_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+
+      - name: vendor_key
+        data_tests:
+          - not_null
+
+      - name: order_profile_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_order_profile')
+                field: order_profile_key
+
+      # Date keys must exist in dim_date (-1 = missing date, which dim_date also holds)
+      - name: order_date_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: delivered_date_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+

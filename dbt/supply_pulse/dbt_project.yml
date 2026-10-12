@@ -13,6 +13,12 @@ macro-paths: ["macros"]
 test-paths: ["tests"]
 seed-paths: ["seeds"]
 analysis-paths: ["analyses"]
+
+vars:
+  # Time the raw files were extracted; any event later than this is impossible
+  # ("future" injected defects) and is turned into NULL by the staging models.
+  data_cutoff_ts: '2026-10-01 00:00:00'
+
 clean-targets: ["target", "dbt_packages"]     # created by dbt itself, never committed
 
 # Where each layer is built.
