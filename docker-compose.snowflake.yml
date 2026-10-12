@@ -1,0 +1,24 @@
+# Optional add-on: Kafka -> Snowflake Bronze loader.
+# Kept in its own file so the team's docker-compose.yml is not touched.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.snowflake.yml up -d --build bronze-loader
+#   docker logs -f bronze-loader
+#
+# Snowflake settings come from your local .env (SNOWFLAKE_*).
+services:
+  bronze-loader:
+    build: ./services/bronze_loader
+    container_name: bronze-loader
+    depends_on:
+      kafka: { condition: service_healthy }
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_REGION: ${SNOWFLAKE_REGION:-us-east-2}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-SUPPLY_PULSE_WH}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-SUPPLY_PULSE_DB}
+      SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA:-BRONZE}
+    restart: on-failure:3
