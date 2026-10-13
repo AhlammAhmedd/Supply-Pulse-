@@ -19,3 +19,5 @@ logs/
 dbt/supply_pulse/.user.yml
 
 scripts/loading_raw_to_snowflake/load_envv.ps1
+
+.env.dbt
