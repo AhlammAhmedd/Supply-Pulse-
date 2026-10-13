@@ -5,3 +5,7 @@ data
 **logs
 /.dist
 venv
+.env.dbt
+dbt/supply_pulse/.user.yml
+dbt/supply_pulse/target/
+dbt/supply_pulse/dbt_packages/
