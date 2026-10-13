@@ -18,6 +18,20 @@ customers as (
 
 ),
 
+-- Line count and item quantity per order, from the cleaned order lines.
+-- Lines whose quantity is still invalid (zero/negative, about 40) are counted
+-- as lines but do not add to item_quantity.
+order_lines as (
+
+    select
+        upper(trim(order_id))                                    as order_id,
+        count(*)                                                 as line_count,
+        sum(case when quantity > 0 then quantity end)            as item_quantity
+    from {{ ref('stg_customer_app__order_items') }}
+    group by 1
+
+),
+
 order_profiles as (
 
     select
@@ -51,13 +65,17 @@ joined as (
 
     select
         p.*,
-        op.order_profile_key as known_order_profile_key
+        op.order_profile_key as known_order_profile_key,
+        ol.line_count        as order_line_count,
+        ol.item_quantity     as order_item_quantity
 
     from prepared as p
     left join order_profiles as op
         on p.payment_method = op.payment_method
        and p.status = op.status
        and p.profile_cancel_reason = op.cancel_reason
+    left join order_lines as ol
+        on p.order_id = ol.order_id
 
 )
 
@@ -99,11 +117,10 @@ select
 
     customer_rating,
 
-    -- These two measures belong to FACT_ORDERS in the Gold design, but the
-    -- order-items staging model is owned by another teammate. Keep NULL until
-    -- that model is merged; do not invent zero.
-    cast(null as number) as line_count,
-    cast(null as number) as item_quantity,
+    -- Filled from the order lines (now merged). An order with no lines gets 0 lines
+    -- and a NULL item_quantity (nothing to sum).
+    coalesce(order_line_count, 0) as line_count,
+    order_item_quantity           as item_quantity,
 
     -- FLAGS
     coalesce(

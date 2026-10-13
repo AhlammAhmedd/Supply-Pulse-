@@ -21,7 +21,9 @@ with raw_text as (
         {{ clean_text('total_amount') }}             as total_amount,
         {{ clean_text('estimated_delivery_min') }}   as estimated_delivery_min,
         {{ clean_text('customer_rating') }}          as customer_rating
-    from {{ source('customer_app', 'orders') }}
+    -- SCD Type 1 on the shared account: latest CDC event per order_id (deletes dropped).
+    -- On dev the macro returns the RAW table unchanged.
+    from {{ latest_cdc_row(source('customer_app', 'orders'), ['order_id']) }}
 
 ),
 

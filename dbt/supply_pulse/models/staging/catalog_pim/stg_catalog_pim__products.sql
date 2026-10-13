@@ -4,7 +4,9 @@
 
 with source as (
 
-    select * from {{ source('catalog_pim', 'products') }}
+    -- SCD Type 1 on the shared account: latest CDC event per product_id (deletes dropped).
+    -- On dev the macro returns the RAW table unchanged.
+    select * from {{ latest_cdc_row(source('catalog_pim', 'products'), ['product_id']) }}
 
 ),
 
@@ -14,8 +16,9 @@ typed as (
 
     select
         product_id,
-        barcode,
-        {{ is_valid_barcode('barcode') }}                  as is_valid_barcode,
+        -- a wrong check digit is corrected (answer key: P00055); is_valid_barcode keeps the original verdict
+        {{ ean13_with_check_digit('trim(barcode)') }}      as barcode,
+        {{ is_valid_barcode('trim(barcode)') }}            as is_valid_barcode,
         {{ fix_upper_case(clean_null('product_name')) }}   as product_name,
         {{ clean_null('brand') }}                          as brand,
         trim(category)                                     as category_raw,   -- original text, kept for auditing

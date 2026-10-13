@@ -1,13 +1,13 @@
 # profiles.yml - HOW dbt connects to Snowflake. Safe to commit: no secret is written here,
-# every value is read from environment variables (your .env file, never committed).
+# every value is read from environment variables (never commit the real values).
 #
 # Pick the target with  --target  (default = dev):
 #   dev     -> YOUR personal Snowflake account   (your own playground)
-#   shared  -> the team's shared account, but YOUR own schemas (DBT_DONIA_SILVER/GOLD)
-#   prod    -> the shared account, the FINAL schemas. Run by one person (or Airflow) only.
+#   shared  -> the team's shared account, but YOUR own schemas (DBT_DONIA_silver / DBT_DONIA_gold)
+#   prod    -> the shared account, the FINAL schemas SILVER / GOLD. Run by one person (or Airflow) only.
 
 supply_pulse:
-  target: dev
+  target: dev                      # keep dev as the default so nothing changes by accident
   outputs:
 
     dev:
@@ -32,7 +32,7 @@ supply_pulse:
       authenticator: "{{ env_var('SHARED_SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
       role:      "{{ env_var('SHARED_SNOWFLAKE_ROLE') }}"
       warehouse: "{{ env_var('SHARED_SNOWFLAKE_WAREHOUSE') }}"
-      database:  "{{ env_var('SHARED_SNOWFLAKE_DATABASE', 'SUPPLY_CHAIN_DB') }}"
+      database:  "{{ env_var('SHARED_SNOWFLAKE_DATABASE', 'SUPPLY_PULSE_DB') }}"
       schema:    "{{ env_var('DBT_SCHEMA') }}"
       threads: 4
       reuse_connections: true
@@ -46,7 +46,7 @@ supply_pulse:
       authenticator: "{{ env_var('SHARED_SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
       role:      "{{ env_var('SHARED_SNOWFLAKE_ROLE') }}"
       warehouse: "{{ env_var('SHARED_SNOWFLAKE_WAREHOUSE') }}"
-      database:  "{{ env_var('SHARED_SNOWFLAKE_DATABASE', 'SUPPLY_CHAIN_DB') }}"
+      database:  "{{ env_var('SHARED_SNOWFLAKE_DATABASE', 'SUPPLY_PULSE_DB') }}"
       schema:    PROD                  # -> PROD_SILVER / PROD_GOLD (final names to be agreed)
       threads: 4
       reuse_connections: true

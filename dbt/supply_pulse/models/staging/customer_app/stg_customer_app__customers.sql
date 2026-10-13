@@ -11,7 +11,10 @@ with raw_text as (
         lower({{ clean_text('city') }})              as city,
         {{ clean_text('signup_ts') }}                as signup_ts,
         lower({{ clean_text('is_pro_subscriber') }}) as is_pro_subscriber
-    from {{ source('customer_app', 'customers') }}
+    -- SCD Type 1: on the shared account the source is a CDC event log, so keep
+    -- only the latest event per customer_id (deleted customers are dropped).
+    -- On the personal account (dev) the macro returns the table unchanged.
+    from {{ latest_cdc_row(source('customer_app', 'customers'), ['customer_id']) }}
 
 ),
 

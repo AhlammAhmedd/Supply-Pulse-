@@ -41,8 +41,8 @@ models:
         data_tests:
           - accepted_values:
               arguments:
-                values: ['Add-ons', 'Burgers', 'Desserts', 'Drinks', 'Grills',
-                         'Koshary', 'Main Dishes', 'Pizza', 'Sandwiches', 'Sides']
+                values: ['Burgers', 'Desserts', 'Drinks', 'Grills', 'Koshary',
+                         'Mains', 'Pizza', 'Plates', 'Sandwiches', 'Sides']
 
       - name: menu_section_raw
         description: "Original section text, kept for auditing."

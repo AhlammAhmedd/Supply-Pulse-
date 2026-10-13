@@ -2,7 +2,9 @@
 -- Grain: one row per (order_id, line_number)
 
 with source as (
-    select * from {{ source('customer_app', 'order_items') }}
+    -- SCD Type 1 on the shared account: latest CDC event per order line (deletes dropped).
+    -- On dev the macro returns the RAW table unchanged.
+    select * from {{ latest_cdc_row(source('customer_app', 'order_items'), ['order_id', 'line_number']) }}
 ),
 
 -- Exact duplicate rows share the same key, so we keep only one of them.

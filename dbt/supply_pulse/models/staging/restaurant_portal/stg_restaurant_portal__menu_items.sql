@@ -4,7 +4,9 @@
 
 with source as (
 
-    select * from {{ source('restaurant_portal', 'menu_items') }}
+    -- SCD Type 1 on the shared account: latest CDC event per menu_item_id (deletes dropped).
+    -- On dev the macro returns the RAW table unchanged.
+    select * from {{ latest_cdc_row(source('restaurant_portal', 'menu_items'), ['menu_item_id']) }}
 
 ),
 
