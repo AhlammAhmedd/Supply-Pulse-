@@ -3,7 +3,7 @@ export MSYS_NO_PATHCONV=1
 
 TOPIC ?= ops.public.vendor_items
 
-.PHONY: init up gen seed snapshot proof connector status stream stream-fast verify check psql peek gate gate-logs evaluate airflow down reset
+.PHONY: init up gen seed snapshot proof connector status stream stream-fast verify check psql peek gate gate-logs sink-logs dashboard evaluate airflow down reset
 
 init:       ## create your .env from the template (first time only)
 	@test -f .env || cp .env.example .env
@@ -48,8 +48,14 @@ psql:       ## open a SQL shell on the source database
 peek:       ## show 5 messages of a topic (try: make peek TOPIC=vendor_items.dlq)
 	docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic $(TOPIC) --from-beginning --max-messages 5
 
-gate:       ## start the QA gate (needs make gen first)
-	docker compose --profile gate up -d --build qa-gate
+gate:       ## start the QA gate and the Postgres sink (needs make gen first)
+	docker compose --profile gate up -d --build qa-gate pg-sink
+
+sink-logs:  ## follow the Postgres sink counters (vendor_items.valid -> serving.*)
+	docker compose logs -f --tail 20 pg-sink
+
+dashboard:  ## start the Streamlit dashboard at http://localhost:8501
+	docker compose --profile dashboard up -d --build dashboard
 
 gate-logs:  ## follow the QA gate counters
 	docker compose logs -f --tail 20 qa-gate
@@ -61,7 +67,7 @@ airflow:    ## start Airflow (UI http://localhost:8080, admin password is in the
 	docker compose --profile airflow up -d airflow
 
 down:       ## stop everything, keep the data
-	docker compose --profile gate --profile airflow down
+	docker compose --profile gate --profile dashboard --profile airflow down
 
 reset:      ## stop everything and DELETE all data volumes
-	docker compose --profile gate --profile airflow down -v
+	docker compose --profile gate --profile dashboard --profile airflow down -v

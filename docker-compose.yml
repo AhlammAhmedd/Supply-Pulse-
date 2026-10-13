@@ -1,10 +1,8 @@
-# Q-commerce CDC platform - phase 1: Postgres -> Debezium -> Kafka (+ Airflow, optional)
-# Only Docker is needed on your machine.
-#   docker compose up -d                  # postgres, kafka, connect, kafka-ui
-#   docker compose --profile airflow up -d airflow
-# One-off jobs (generator, replayer) are run with `docker compose run --rm ...` (see Makefile).
+# Q-commerce CDC platform
+# PostgreSQL -> Debezium -> Kafka -> QA -> PostgreSQL / Snowflake
+# Optional: Airflow, Streamlit dashboard, and Snowflake Bronze loader
 
-name: qcommerce-platform      # same project name for everyone, whatever the folder is called
+name: qcommerce-platform
 
 services:
   postgres:
@@ -13,9 +11,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    # logical decoding is what lets Debezium read the write-ahead log
-    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
-    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -28,13 +33,14 @@ services:
       retries: 20
 
   kafka:
-    image: apache/kafka:3.8.0          # KRaft mode: no Zookeeper
-    ports: ["${KAFKA_EXTERNAL_PORT:-9094}:9094"]   # external listener for tools on your machine
+    image: apache/kafka:3.8.0
+    ports:
+      - "${KAFKA_EXTERNAL_PORT:-9094}:9094"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT:-9094}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
@@ -51,12 +57,15 @@ services:
       timeout: 10s
       retries: 20
 
-  connect:                              # Debezium = Kafka Connect + the Postgres connector
+  connect:
     image: quay.io/debezium/connect:2.7
     depends_on:
-      kafka: { condition: service_healthy }
-      postgres: { condition: service_healthy }
-    ports: ["${CONNECT_PORT:-8083}:8083"]
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${CONNECT_PORT:-8083}:8083"
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: connect-cluster
@@ -69,17 +78,20 @@ services:
     volumes:
       - ./infra/debezium:/connectors:ro
 
-  kafka-ui:                             # browse topics and messages at http://localhost:8088
+  kafka-ui:
     image: provectuslabs/kafka-ui:latest
-    depends_on: [kafka, connect]
-    ports: ["${KAFKA_UI_PORT:-8088}:8080"]
+    depends_on:
+      - kafka
+      - connect
+    ports:
+      - "${KAFKA_UI_PORT:-8088}:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
 
-  # ---------- one-off jobs (profile "tools": started only when you run them) ----------
+  # One-off data generation job
   generator:
     image: python:3.12-slim
     profiles: ["tools"]
@@ -87,13 +99,21 @@ services:
     volumes:
       - ./scripts/data_generator:/app:ro
       - ./data:/data
-    command: ["python", "generate_qcommerce_data.py", "--out", "/data", "--preset", "small"]
+    command:
+      - python
+      - generate_qcommerce_data.py
+      - --out
+      - /data
+      - --preset
+      - small
 
+  # One-off CDC replayer
   replayer:
     build: ./services/replayer
     profiles: ["tools"]
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres:
+        condition: service_healthy
     environment:
       DATA_DIR: /data
       PGHOST: postgres
@@ -103,30 +123,95 @@ services:
     volumes:
       - ./data:/data:ro
 
-  qa-gate:                              # validates change events: valid topic / DLQ topic
+  # Kafka QA gate: valid events and invalid events routed to a DLQ
+  qa-gate:
     build: ./services/qa_gate
     profiles: ["gate"]
     depends_on:
-      kafka: { condition: service_healthy }
+      kafka:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       DATA_DIR: /data
+      PRICE_MAX_INCREASE_RATIO: ${PRICE_MAX_INCREASE_RATIO:-1.6}
+      PRICE_MIN_DECREASE_RATIO: ${PRICE_MIN_DECREASE_RATIO:-0.6}
+      PRICE_JUMP_MIN_ABS_EGP: ${PRICE_JUMP_MIN_ABS_EGP:-0.5}
+      QUARANTINE_CONFIRM_COUNT: ${QUARANTINE_CONFIRM_COUNT:-3}
+      STALE_ACTION: ${STALE_ACTION:-dlq}
+      DEDUP_WINDOW: ${DEDUP_WINDOW:-16}
+      MAX_FUTURE_SKEW_SECONDS: ${MAX_FUTURE_SKEW_SECONDS:-0}
+      STATEFUL_CHECKS: ${STATEFUL_CHECKS:-true}
+      STATE_REBUILD: ${STATE_REBUILD:-true}
     volumes:
       - ./data:/data:ro
     restart: unless-stopped
 
-  # ---------- orchestration (profile "airflow") ----------
+  # Valid Kafka events -> PostgreSQL serving tables
+  pg-sink:
+    build: ./services/pg_sink
+    profiles: ["gate"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    restart: unless-stopped
+
+  # Streamlit dashboard showing valid records
+  dashboard:
+    build: ./dashboard
+    profiles: ["dashboard"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    restart: unless-stopped
+
+  # Optional Airflow development instance
   airflow:
     image: apache/airflow:2.10.2
     profiles: ["airflow"]
-    command: standalone                 # dev mode: webserver + scheduler + SQLite in one container
-    ports: ["${AIRFLOW_PORT:-8080}:8080"]
+    command: standalone
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./infra/debezium:/opt/airflow/infra/debezium:ro
 
+  # Optional Kafka -> Snowflake Bronze loader
+  bronze-loader:
+    build: ./services/bronze_loader
+    profiles: ["snowflake"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_REGION: ${SNOWFLAKE_REGION:-us-east-2}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-SUPPLY_PULSE_WH}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-SUPPLY_PULSE_DB}
+      SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA:-BRONZE}
+    restart: on-failure:3
+
 volumes:
   pgdata:
   kafkadata:
+

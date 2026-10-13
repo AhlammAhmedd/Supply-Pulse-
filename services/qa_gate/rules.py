@@ -2,20 +2,31 @@
 QA gate rules (pure functions, no Kafka): raw vendor_items row -> CleanItem, or Reject(reason).
 
 Order of checks follows the reference gate of the data generator, so the result can be
-compared with _answer_key/scenario_events.csv (see evaluate.py).
+compared with _answer_key/scenario_events.csv (see evaluate.py). The checks that go beyond the
+reference gate (identity, currency, timestamp, integer stock) run AFTER it, so they can only reject
+rows the reference gate would accept and never change an existing reject reason.
+
+Checks that need history (duplicates, stale events, price jumps) are in state.py.
 """
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
+from config import DEFAULT_CONFIG
+
 CAIRO = ZoneInfo("Africa/Cairo")
 NULL_TOKENS = {"", "n/a", "null", "none", "nan", "-"}
 TRUE_SET = {"true", "1", "y", "yes", "in_stock", "available"}
 FALSE_SET = {"false", "0", "n", "no", "out_of_stock", "oos", "out-of-stock", "unavailable", "sold_out"}
+ITEM_REF_RE = re.compile(r"SKU-\d{5}|M\d{7}")
+VENDOR_ID_RE = re.compile(r"(?:v-?)?0*(\d+)", re.IGNORECASE)
+# every spelling of the Egyptian pound seen in the source; "PT" (piasters) is handled by the vendor's
+# integration type (POS_LEGACY prices are divided by 100), so the amount is already in EGP here
+EGP_ALIASES = {"egp", "le", "l.e", "l.e.", "e£", "£e", "£", "جنيه", "جنيه مصري", "ج.م", "pt", "piaster", "piasters"}
 
 
 class Reject(Exception):
@@ -35,13 +46,18 @@ class CleanItem(BaseModel):
     updated_by: Optional[str]
     event_time_utc: Optional[datetime]
     src_lsn: Optional[int]
+    currency: str = "EGP"          # normalised: the price is always EGP
+    currency_assumed: bool = False  # True when the source left the currency empty
 
 
 class Reference:
-    """Master data used by the gate: integration type per vendor + list price per item."""
-    def __init__(self, integration: dict, list_price: dict):
+    """Master data used by the gate: integration type per vendor, list price per item, and the
+    identity sets (product ids, menu item -> owning vendor)."""
+    def __init__(self, integration: dict, list_price: dict, products=None, menu_vendor=None):
         self.integration = integration      # {12: "POS_LEGACY", ...}
         self.list_price = list_price        # {"SKU-00045": 31.5, "M0000123": 55.0}
+        self.products = products or set()   # {"SKU-00045", ...} every product of the master data
+        self.menu_vendor = menu_vendor or {}  # {"M0000123": 12, ...}
 
 
 def is_null(v) -> bool:
@@ -109,11 +125,40 @@ def parse_time_utc(v) -> Optional[datetime]:
         return None
 
 
-def validate(raw: dict, ref: Reference) -> CleanItem:
+def parse_vendor_id(v) -> int:
+    """12, '12', 'V0012', 'v-0012' -> 12. Raises Reject if missing or not a positive vendor number."""
+    if v is None or isinstance(v, bool) or (isinstance(v, str) and not v.strip()):
+        raise Reject("MISSING_VENDOR_ID")
+    if isinstance(v, int):
+        n = v
+    else:
+        m = VENDOR_ID_RE.fullmatch(str(v).strip())
+        if not m:
+            raise Reject("INVALID_VENDOR_ID")
+        n = int(m.group(1))
+    if n <= 0:
+        raise Reject("INVALID_VENDOR_ID")
+    return n
+
+
+def normalize_currency(v) -> tuple:
+    """-> (currency, assumed). All known spellings of the pound become 'EGP'; an empty value is
+    assumed to be EGP (and flagged); anything else is rejected."""
+    if is_null(v):
+        return "EGP", True
+    if str(v).strip().lower() in EGP_ALIASES:
+        return "EGP", False
+    raise Reject("UNSUPPORTED_CURRENCY")
+
+
+def validate(raw: dict, ref: Reference, cfg=None) -> CleanItem:
     """raw: dict with the vendor_items columns (strings). Raises Reject(reason)."""
-    store_id = int(raw["store_id"])
-    item_ref = str(raw["item_ref"]).strip()
-    item_type = "grocery" if item_ref.upper().startswith("SKU") else "menu"
+    cfg = cfg or DEFAULT_CONFIG
+    store_id = parse_vendor_id(raw.get("store_id"))
+    if is_null(raw.get("item_ref")):
+        raise Reject("MISSING_ITEM_REF")
+    item_ref = str(raw["item_ref"]).strip().upper()
+    item_type = "grocery" if item_ref.startswith("SKU") else "menu"
 
     if is_null(raw.get("item_name")):
         raise Reject("NULL_ITEM_NAME")
@@ -144,12 +189,46 @@ def validate(raw: dict, ref: Reference) -> CleanItem:
             raise Reject("NEGATIVE_STOCK")
         if (q > 0) != av:
             raise Reject("AVAILABILITY_CONFLICT")
+        if q != int(q):
+            raise Reject("NON_INTEGER_STOCK")
         qty = int(q)
 
+    # ---- checks beyond the reference gate (run last: they never change an existing reject reason) ----
+    if not ITEM_REF_RE.fullmatch(item_ref):
+        raise Reject("INVALID_ITEM_REF")                     # SKU-00045 or M0000123
+
+    if ref.integration and store_id not in ref.integration:
+        raise Reject("UNKNOWN_VENDOR")
+    if item_type == "grocery":
+        if ref.products and item_ref not in ref.products:    # product identity from the product master
+            raise Reject("UNKNOWN_PRODUCT")
+    elif ref.menu_vendor:                                    # menu item identity from the menu master
+        owner = ref.menu_vendor.get(item_ref)
+        if owner is None:
+            raise Reject("UNKNOWN_MENU_ITEM")
+        if owner != store_id:
+            raise Reject("ITEM_VENDOR_MISMATCH")
+
+    currency, currency_assumed = normalize_currency(raw.get("currency"))
+
+    if is_null(raw.get("updated_at")):
+        raise Reject("MISSING_TIMESTAMP")
+    event_time = parse_time_utc(raw.get("updated_at"))
+    if event_time is None:
+        raise Reject("INVALID_TIMESTAMP")
+    if event_time < cfg.min_event_time:
+        raise Reject("TIMESTAMP_OUT_OF_RANGE")
+    if cfg.max_future_skew_seconds and event_time > datetime.now(timezone.utc) + timedelta(seconds=cfg.max_future_skew_seconds):
+        raise Reject("FUTURE_TIMESTAMP")
+
     lsn = raw.get("src_lsn", raw.get("lsn"))
+    try:
+        src_lsn = int(lsn) if lsn not in (None, "") else None
+    except (TypeError, ValueError):
+        raise Reject("INVALID_LSN")
+
     return CleanItem(
         vendor_id=f"V{store_id:04d}", item_ref=item_ref, item_type=item_type,
-        item_name=str(raw["item_name"]).strip(), price_egp=price, is_available=av, qty_on_hand=qty,
+        item_name=" ".join(str(raw["item_name"]).split()), price_egp=price, is_available=av, qty_on_hand=qty,
         updated_by=(str(raw["updated_by"]).strip() or None) if raw.get("updated_by") else None,
-        event_time_utc=parse_time_utc(raw.get("updated_at")),
-        src_lsn=int(lsn) if lsn not in (None, "") else None)
+        event_time_utc=event_time, src_lsn=src_lsn, currency=currency, currency_assumed=currency_assumed)

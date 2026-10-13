@@ -28,4 +28,5 @@ Airflow supervises the connector and runs dbt on a schedule.
 |---|---|
 | `ops.<schema>.<table>` | Debezium envelope `{before, after, op, ts_ms, source}` |
 | `vendor_items.valid` | clean, typed events (EGP, UTC) and deletes |
-| `vendor_items.dlq` | rejected events with `reject_reason` and the raw row |
+| `vendor_items.dlq` | rejected events with `reject_reason`, `detail` and the raw row |
+| `vendor_items.quarantine` | valid rows with a suspicious price jump, held for review (see [qa_gate.md](qa_gate.md)) |
