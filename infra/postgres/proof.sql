@@ -34,3 +34,4 @@ SELECT store_id, item_ref, item_name, item_price, currency, qty_on_hand, is_avai
 FROM public.vendor_items ORDER BY store_id, item_ref LIMIT 5;
 SELECT order_id, customer_id, vendor_id, order_ts, status, total_amount
 FROM customer_app.orders ORDER BY row_id LIMIT 5;
+

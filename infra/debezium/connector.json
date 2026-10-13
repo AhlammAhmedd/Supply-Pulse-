@@ -7,7 +7,7 @@
     "database.port": "5432",
     "database.user": "cdc_user",
     "database.password": "cdc_pass",
-    "database.dbname": "ops",
+    "database.dbname": "qcommerce",
     "topic.prefix": "ops",
     "schema.include.list": "public,partners_system,catalog_pim,restaurant_portal,customer_app,wms",
     "publication.name": "qcommerce_pub",

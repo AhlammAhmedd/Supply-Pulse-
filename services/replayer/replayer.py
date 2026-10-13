@@ -105,6 +105,7 @@ def count_records(path):
 
 def seed(root, dry_run):
     conn = None if dry_run else connect()
+    schemas = {"public"}
     for schema, table, path in source_files(root):
         with open(path, newline="", encoding="utf-8") as f:
             header = next(csv.reader(f))
@@ -127,9 +128,26 @@ def seed(root, dry_run):
                     while chunk := f.read(1 << 20):
                         cp.write(chunk)
         conn.commit()
+        schemas.add(schema)
         print(f"{schema}.{table}: {n} rows loaded", flush=True)
     if not dry_run:
+        grant_cdc_access(conn, schemas)
         print("seed done. Next: load vendor_items (snapshot), then register the connector.")
+
+
+def grant_cdc_access(conn, schemas):
+    """Debezium's snapshot reads every table as cdc_user: make sure it is allowed to, whatever
+    user created the tables (avoids 'permission denied for schema ...')."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'cdc_user'")
+        if not cur.fetchone():
+            print("note: role cdc_user does not exist, skipping grants")
+            return
+        for schema in sorted(schemas):
+            cur.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO cdc_user')
+            cur.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA "{schema}" TO cdc_user')
+    conn.commit()
+    print("granted read access on all tables to cdc_user")
 
 
 def verify_seed(root):
@@ -153,8 +171,8 @@ def connect():
         password=os.environ.get("PGPASSWORD", "postgres"), autocommit=False)
 
 
-def verify(events, stage):
-    """Computes the table state the file SHOULD produce and compares it with Postgres."""
+def expected_state(events, stage):
+    """Table state the file should produce: after the snapshot, or after the full stream."""
     expected = {}
     for e in events:                                   # same order the replayer applies them
         if e["op"].strip() == "r":
@@ -167,15 +185,40 @@ def verify(events, stage):
                 expected.pop(key, None)
             elif op in ("c", "u"):
                 expected[key] = int(e["lsn"])
-    with connect().cursor() as cur:
-        cur.execute("SELECT store_id, item_ref, src_lsn FROM public.vendor_items")
-        actual = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    return expected
+
+
+def diff(expected, actual):
     missing = expected.keys() - actual.keys()
     extra = actual.keys() - expected.keys()
     stale = [k for k in expected.keys() & actual.keys() if expected[k] != actual[k]]
+    return len(missing), len(extra), len(stale)
+
+
+def verify(events, stage):
+    """Compares public.vendor_items with what the file should have produced.
+    stage = snapshot | all | auto (auto: report which of the two stages Postgres is at)."""
+    with connect().cursor() as cur:
+        cur.execute("SELECT store_id, item_ref, src_lsn FROM public.vendor_items")
+        actual = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    snap, final = expected_state(events, "snapshot"), expected_state(events, "all")
+    if stage == "auto":
+        if diff(snap, actual) == (0, 0, 0):
+            print(f"VERIFY OK: vendor_items is at the SNAPSHOT stage ({len(actual)} rows). The stream has not been applied yet.")
+            return 0
+        if diff(final, actual) == (0, 0, 0):
+            print(f"VERIFY OK: vendor_items is at the FINAL stage ({len(actual)} rows). The full stream has been applied.")
+            return 0
+        changed = sum(1 for k, v in actual.items() if snap.get(k) != v)
+        print(f"VERIFY: vendor_items matches neither stage. Rows now: {len(actual)} "
+              f"(snapshot {len(snap)}, final {len(final)}); {changed} rows differ from the snapshot.")
+        print("Most likely the stream is partly applied. Finish it with: make stream-fast ARGS=\"--skip <events already applied>\"")
+        return 1
+    expected = snap if stage == "snapshot" else final
+    m, x, st = diff(expected, actual)
     print(f"expected rows: {len(expected)}   rows in postgres: {len(actual)}")
-    print(f"missing: {len(missing)}   unexpected: {len(extra)}   not at latest version: {len(stale)}")
-    ok = not (missing or extra or stale)
+    print(f"missing: {m}   unexpected: {x}   not at latest version: {st}")
+    ok = (m, x, st) == (0, 0, 0)
     print("VERIFY OK: postgres matches the file" if ok else "VERIFY FAILED")
     return 0 if ok else 1
 
@@ -187,8 +230,10 @@ def main():
     ap.add_argument("--file", default=None, help="CDC events file (default: <data>/ops_db_cdc/vendor_items_events.csv)")
     ap.add_argument("--rate", type=float, default=200.0, help="events/second in stream mode (0 = no limit)")
     ap.add_argument("--limit", type=int, default=0, help="stop after N events (0 = all)")
-    ap.add_argument("--stage", choices=["seed", "snapshot", "all"], default="all",
-                    help="verify only: seed = the CSV tables, snapshot = vendor_items after the snapshot, all = after the full stream")
+    ap.add_argument("--skip", type=int, default=0, help="stream only: skip the first N events (resume an interrupted run)")
+    ap.add_argument("--batch", type=int, default=1, help="stream only: events per transaction (1 = one each; 200 is much faster)")
+    ap.add_argument("--stage", choices=["seed", "snapshot", "all", "auto"], default="auto",
+                    help="verify only: seed = the CSV tables; snapshot / all = vendor_items after the snapshot / the full stream; auto (default) = report which stage vendor_items is at")
     ap.add_argument("--dry-run", action="store_true", help="read and count only, no database")
     a = ap.parse_args()
 
@@ -206,6 +251,8 @@ def main():
         todo = [e for e in events if e["op"].strip() == "r"]
     else:
         todo = [e for e in events if e["op"].strip() in ("c", "u", "d")]
+    if a.skip:
+        todo = todo[a.skip:]
     if a.limit:
         todo = todo[: a.limit]
     print(f"{a.mode}: {len(todo)} events to apply ({dupes} duplicate lsn rows skipped)", flush=True)
@@ -221,10 +268,12 @@ def main():
         print("snapshot rows loaded. Now register the connector (make connector).")
         return
 
-    conn.autocommit = True   # one transaction per event = one change event each
+    conn.autocommit = a.batch <= 1       # batch 1: one transaction per event
     delay = 1.0 / a.rate if a.rate else 0.0
     counts = {"c": 0, "u": 0, "d": 0}
+    started = time.time()
     with conn.cursor() as cur:
+        cur.execute("SET synchronous_commit = off")   # do not wait for the disk on every commit (demo data)
         for i, e in enumerate(todo, 1):
             op = e["op"].strip()
             if op == "d":
@@ -232,10 +281,16 @@ def main():
             else:                      # c and u are both an upsert
                 cur.execute(UPSERT, params(e))
             counts[op] += 1
-            if i % 1000 == 0:
-                print(f"  {i}/{len(todo)} applied", flush=True)
+            if a.batch > 1 and i % a.batch == 0:
+                conn.commit()
+            if i % 5000 == 0:
+                rate = i / (time.time() - started)
+                eta = (len(todo) - i) / rate / 60
+                print(f"  {i}/{len(todo)} applied  ({rate:,.0f} events/s, about {eta:.1f} min left)", flush=True)
             if delay:
                 time.sleep(delay)
+        if a.batch > 1:
+            conn.commit()
     print("stream done:", counts)
 
 

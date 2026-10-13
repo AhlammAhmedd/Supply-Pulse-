@@ -1,7 +1,0 @@
-.git
-data
-**/__pycache__
-.env
-**logs
-/.dist
-venv
